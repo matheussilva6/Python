@@ -1,0 +1,443 @@
+import random
+import tkinter as tk
+from tkinter import messagebox
+
+GRID = [
+    ["EC", "MC", "DC"],
+    ["EM", "MM", "DM"],
+    ["EB", "MB", "DB"],
+]
+ALL_POS = [p for row in GRID for p in row]
+
+TEAMS = [
+    "Benfica", "Sporting", "Porto", "Braga",
+    "Real Madrid", "Barcelona", "Man City", "Liverpool",
+    "PSG", "Bayern", "Juventus", "Milan",
+]
+
+MAX_PENALTIES = 5  # por equipa
+
+
+def escolher_dificuldade():
+    # 1 fácil, 2 médio, 3 difícil (fixo por agora)
+    return 2
+
+
+def cpu_chute():
+    return random.choice(ALL_POS)
+
+
+def gr_escolha(dificuldade, alvo_chute):
+    """Escolha do guarda-redes (quem está a defender)."""
+    if dificuldade == 1:
+        # defende um bocado melhor
+        lista = [alvo_chute] + ALL_POS * 4
+    elif dificuldade == 2:
+        # justo
+        lista = ALL_POS * 5
+    else:
+        # defende muito melhor
+        lista = [alvo_chute] * 5 + ALL_POS
+    return random.choice(lista)
+
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Jogo de Penáltis")
+        self.geometry("720x600")
+        self.resizable(False, False)
+
+        self.menu = MenuFrame(self)
+        self.game = GameFrame(self)
+
+        self.menu.pack(fill="both", expand=True)
+
+    def start_game(self, mode, team1, team2):
+        self.menu.pack_forget()
+        self.game.setup(mode, team1, team2)
+        self.game.pack(fill="both", expand=True)
+
+    def back_to_menu(self):
+        self.game.pack_forget()
+        self.menu.pack(fill="both", expand=True)
+
+
+class MenuFrame(tk.Frame):
+    def __init__(self, master: App):
+        super().__init__(master)
+        self.master = master
+
+        tk.Label(self, text="⚽ JOGO DE PENÁLTIS", font=("Arial", 20, "bold")).pack(pady=20)
+
+        box = tk.Frame(self, bd=2, relief="groove", padx=20, pady=20)
+        box.pack(pady=10)
+
+        tk.Label(box, text="Modo:", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self.mode = tk.StringVar(value="CPU")
+        tk.Radiobutton(box, text="Jogar contra a CPU", variable=self.mode, value="CPU").grid(row=1, column=0, sticky="w")
+        tk.Radiobutton(box, text="2 Jogadores (PvP)", variable=self.mode, value="PVP").grid(row=2, column=0, sticky="w")
+
+        tk.Label(box, text="Equipa Jogador 1:", font=("Arial", 12, "bold")).grid(row=3, column=0, sticky="w", pady=(12, 4))
+        self.team1 = tk.StringVar(value=TEAMS[0])
+        tk.OptionMenu(box, self.team1, *TEAMS).grid(row=4, column=0, sticky="we")
+
+        tk.Label(box, text="Equipa Jogador 2 / CPU:", font=("Arial", 12, "bold")).grid(row=5, column=0, sticky="w", pady=(12, 4))
+        self.team2 = tk.StringVar(value=TEAMS[1])
+        tk.OptionMenu(box, self.team2, *TEAMS).grid(row=6, column=0, sticky="we")
+
+        tk.Button(self, text="Começar", font=("Arial", 14, "bold"), width=18, height=2, command=self.on_start).pack(pady=20)
+
+        tk.Label(
+            self,
+            text=f"Regras: {MAX_PENALTIES} penáltis por equipa. Vitória antecipada se já não der para virar.",
+            font=("Arial", 10)
+        ).pack(pady=6)
+
+    def on_start(self):
+        self.master.start_game(self.mode.get(), self.team1.get(), self.team2.get())
+
+
+class GameFrame(tk.Frame):
+    def __init__(self, master: App):
+        super().__init__(master)
+        self.master = master
+
+        # config jogo
+        self.mode = "CPU"
+        self.team1 = "Jogador 1"
+        self.team2 = "CPU"
+        self.diff = escolher_dificuldade()
+
+        # estado jogo
+        self.score1 = 0
+        self.score2 = 0
+        self.attempts1 = 0
+        self.attempts2 = 0
+        self.turn = 1  # 1 = team1 a chutar, 2 = team2/CPU a chutar
+        self.phase = "shot"  # PvP: shot -> save; CPU: alterna por turno
+        self.pending_shot = None
+        self.game_over = False
+
+        # UI topo
+        top = tk.Frame(self, pady=10)
+        top.pack(fill="x")
+        self.title_lbl = tk.Label(top, text="", font=("Arial", 16, "bold"))
+        self.title_lbl.pack()
+        self.info_lbl = tk.Label(top, text="", font=("Arial", 12))
+        self.info_lbl.pack(pady=6)
+        self.score_lbl = tk.Label(top, text="", font=("Arial", 14, "bold"))
+        self.score_lbl.pack(pady=6)
+        self.round_lbl = tk.Label(top, text="", font=("Arial", 12, "bold"))
+        self.round_lbl.pack(pady=4)
+
+        # Canvas baliza
+        self.canvas_w = 680
+        self.canvas_h = 340
+        self.canvas = tk.Canvas(self, width=self.canvas_w, height=self.canvas_h, bd=0, highlightthickness=0)
+        self.canvas.pack(pady=10)
+        self.canvas.bind("<Button-1>", self.on_click)
+
+        # overlay anti-batota (em cima do canvas)
+        self.overlay = tk.Frame(self.canvas, bg="black")
+        self.overlay.place_forget()
+
+        self.overlay_title = tk.Label(self.overlay, text="", fg="white", bg="black", font=("Arial", 18, "bold"), justify="center")
+        self.overlay_title.pack(pady=35)
+
+        self.overlay_count = tk.Label(self.overlay, text="", fg="white", bg="black", font=("Arial", 28, "bold"))
+        self.overlay_count.pack(pady=5)
+
+        self.overlay_btn = tk.Button(self.overlay, text="Continuar", font=("Arial", 14, "bold"), command=self.start_countdown)
+        self.overlay_btn.pack(pady=10)
+
+        # UI baixo
+        bottom = tk.Frame(self, pady=10)
+        bottom.pack(fill="x")
+        tk.Button(bottom, text="Reiniciar", font=("Arial", 12), command=self.reset_match).pack(side="left", padx=10)
+        tk.Button(bottom, text="Voltar ao Menu", font=("Arial", 12), command=self.master.back_to_menu).pack(side="left", padx=10)
+        tk.Button(bottom, text="Sair", font=("Arial", 12), bg="red", fg="white", command=self.master.destroy).pack(side="right", padx=10)
+
+        # geometria baliza e zonas
+        self.goal_x1, self.goal_y1 = 110, 40
+        self.goal_x2, self.goal_y2 = 570, 300
+        self.cells = []
+        self._build_cells()
+
+        # gate para impedir cliques durante overlay
+        self.click_locked = False
+
+    # ---------- SETUP / RESET ----------
+    def setup(self, mode, team1, team2):
+        self.mode = mode
+        self.team1 = team1
+        self.team2 = (team2 if mode == "PVP" else "CPU")
+        self.diff = escolher_dificuldade()
+        self.reset_match(silent=True)
+
+    def reset_match(self, silent=False):
+        self.score1 = 0
+        self.score2 = 0
+        self.attempts1 = 0
+        self.attempts2 = 0
+        self.turn = 1
+        self.phase = "shot"
+        self.pending_shot = None
+        self.game_over = False
+        self.click_locked = False
+        self.hide_overlay(force=True)
+
+        self.title_lbl.config(text=f"{self.team1} vs {self.team2}")
+        self.redraw()
+        self.update_labels()
+
+        if not silent:
+            messagebox.showinfo("Reiniciado", "Jogo reiniciado.")
+
+    # ---------- UI HELPERS ----------
+    def _build_cells(self):
+        self.cells.clear()
+        w = self.goal_x2 - self.goal_x1
+        h = self.goal_y2 - self.goal_y1
+        cw = w / 3
+        ch = h / 3
+        for r in range(3):
+            for c in range(3):
+                x1 = self.goal_x1 + c * cw
+                y1 = self.goal_y1 + r * ch
+                x2 = x1 + cw
+                y2 = y1 + ch
+                pos = GRID[r][c]
+                self.cells.append((pos, x1, y1, x2, y2))
+
+    def redraw(self, highlight_shot=None, highlight_gr=None, both=None):
+        self.canvas.delete("all")
+        self.canvas.create_rectangle(0, 0, self.canvas_w, self.canvas_h, fill="white", outline="")
+
+        # baliza
+        self.canvas.create_rectangle(self.goal_x1, self.goal_y1, self.goal_x2, self.goal_y2, outline="black", width=4)
+
+        # rede
+        for i in range(1, 9):
+            y = self.goal_y1 + i * (self.goal_y2 - self.goal_y1) / 9
+            self.canvas.create_line(self.goal_x1, y, self.goal_x2, y, fill="#777")
+        for i in range(1, 12):
+            x = self.goal_x1 + i * (self.goal_x2 - self.goal_x1) / 12
+            self.canvas.create_line(x, self.goal_y1, x, self.goal_y2, fill="#777")
+
+        # zonas
+        for pos, x1, y1, x2, y2 in self.cells:
+            fill = ""
+            if both == pos:
+                fill = "#FFD700"
+            elif highlight_shot == pos:
+                fill = "#90EE90"
+            elif highlight_gr == pos:
+                fill = "#FFB6C1"
+
+            self.canvas.create_rectangle(x1, y1, x2, y2, outline="black", width=2, fill=fill)
+            self.canvas.create_text((x1 + x2) / 2, (y1 + y2) / 2, text=pos, font=("Arial", 16, "bold"))
+
+        self.canvas.create_text(340, 322, text="Chute=verde | GR=rosa | Ambos=dourado", font=("Arial", 10))
+
+    def pos_from_xy(self, x, y):
+        for pos, x1, y1, x2, y2 in self.cells:
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return pos
+        return None
+
+    def update_labels(self):
+        self.score_lbl.config(text=f"Placar: {self.team1} {self.score1} - {self.score2} {self.team2}")
+        self.round_lbl.config(text=f"Tentativas: {self.attempts1}/{MAX_PENALTIES} vs {self.attempts2}/{MAX_PENALTIES}")
+
+        if self.game_over:
+            self.info_lbl.config(text="Jogo terminado. Reinicia ou volta ao menu.")
+            return
+
+        if self.mode == "CPU":
+            if self.turn == 1:
+                self.info_lbl.config(text=f"{self.team1} a CHUTAR: clica na baliza.")
+            else:
+                self.info_lbl.config(text="CPU a CHUTAR: escolhe a tua DEFESA (clica onde o GR vai).")
+        else:
+            shooter = self.team1 if self.turn == 1 else self.team2
+            keeper = self.team2 if self.turn == 1 else self.team1
+            if self.phase == "shot":
+                self.info_lbl.config(text=f"{shooter} a CHUTAR: clica na baliza.")
+            else:
+                self.info_lbl.config(text=f"{keeper} a DEFENDER: clica na baliza.")
+
+    # ---------- OVERLAY (anti-batota PvP) ----------
+    def show_overlay(self, title_text):
+        self.click_locked = True
+        self.overlay_title.config(text=title_text)
+        self.overlay_count.config(text="")
+        self.overlay_btn.config(state="normal")
+        self.overlay.place(x=0, y=0, width=self.canvas_w, height=self.canvas_h)
+        self.overlay.lift()
+
+    def hide_overlay(self, force=False):
+        if force:
+            self.click_locked = False
+        self.overlay.place_forget()
+
+    def start_countdown(self):
+        # bloqueia o botão e faz 3-2-1
+        self.overlay_btn.config(state="disabled")
+        self._countdown_step(3)
+
+    def _countdown_step(self, n):
+        if n <= 0:
+            self.hide_overlay(force=True)
+            self.update_labels()
+            return
+        self.overlay_count.config(text=str(n))
+        self.after(600, lambda: self._countdown_step(n - 1))
+
+    # ---------- ENDGAME ----------
+    def check_end_or_early_win(self):
+        # fim por limite
+        if self.attempts1 >= MAX_PENALTIES and self.attempts2 >= MAX_PENALTIES:
+            return True
+
+        # vitória antecipada
+        remaining1 = MAX_PENALTIES - self.attempts1
+        remaining2 = MAX_PENALTIES - self.attempts2
+
+        if self.score1 > self.score2 + remaining2:
+            return True
+        if self.score2 > self.score1 + remaining1:
+            return True
+
+        return False
+
+    def finish_game(self):
+        self.game_over = True
+        self.update_labels()
+        if self.score1 > self.score2:
+            messagebox.showinfo("Fim", f"🏆 {self.team1} ganhou! ({self.score1}-{self.score2})")
+        elif self.score2 > self.score1:
+            messagebox.showinfo("Fim", f"🏆 {self.team2} ganhou! ({self.score2}-{self.score1})")
+        else:
+            messagebox.showinfo("Fim", f"🤝 Empate! ({self.score1}-{self.score2})")
+
+    # ---------- CLICK HANDLER ----------
+    def on_click(self, event):
+        if self.game_over or self.click_locked:
+            return
+
+        pos = self.pos_from_xy(event.x, event.y)
+        if not pos:
+            return
+
+        if self.mode == "CPU":
+            self.handle_cpu(pos)
+        else:
+            self.handle_pvp(pos)
+
+    # ---------- CPU MODE ----------
+    def handle_cpu(self, user_choice):
+        # turn 1 = tu chutas, CPU defende
+        if self.turn == 1:
+            shot = user_choice
+            cpu_gr = gr_escolha(self.diff, shot)
+
+            self.attempts1 += 1
+            if shot != cpu_gr:
+                self.score1 += 1
+                outcome = "⚽ GOLO!"
+            else:
+                outcome = "🔴 DEFESA!"
+
+            both = shot if shot == cpu_gr else None
+            self.redraw(highlight_shot=shot, highlight_gr=cpu_gr, both=both)
+            self.update_labels()
+            messagebox.showinfo("Resultado", f"{outcome}\n\nTu chutaste: {shot}\nCPU (GR): {cpu_gr}")
+
+            # passa para CPU chutar
+            self.turn = 2
+            self.redraw()
+            self.update_labels()
+
+        # turn 2 = CPU chuta, tu defendes (escolhes onde o GR vai)
+        else:
+            cpu_shot = cpu_chute()
+            user_gr = user_choice
+
+            self.attempts2 += 1
+            if cpu_shot == user_gr:
+                outcome = "🧤 DEFENDESTE!"
+            else:
+                self.score2 += 1
+                outcome = "💥 CPU MARCOU!"
+
+            both = cpu_shot if cpu_shot == user_gr else None
+            self.redraw(highlight_shot=cpu_shot, highlight_gr=user_gr, both=both)
+            self.update_labels()
+            messagebox.showinfo("Resultado", f"{outcome}\n\nCPU chutou: {cpu_shot}\nTu (GR): {user_gr}")
+
+            # volta para tu chutares
+            self.turn = 1
+            self.redraw()
+            self.update_labels()
+
+        if self.check_end_or_early_win():
+            self.finish_game()
+
+    # ---------- PVP MODE ----------
+    def handle_pvp(self, pos):
+        # Fase 1: chute (guardar mas NÃO mostrar)
+        if self.phase == "shot":
+            self.pending_shot = pos
+            self.phase = "save"
+
+            keeper = self.team2 if self.turn == 1 else self.team1
+            self.redraw()  # limpa tudo para não denunciar
+            self.update_labels()
+
+            self.show_overlay(f"Passa para o GR ({keeper})\nClica Continuar para contar 3-2-1")
+            return
+
+        # Fase 2: defesa
+        shot = self.pending_shot
+        gr_pos = pos
+
+        shooter = self.team1 if self.turn == 1 else self.team2
+        keeper = self.team2 if self.turn == 1 else self.team1
+
+        # conta tentativa do chutador
+        if self.turn == 1:
+            self.attempts1 += 1
+        else:
+            self.attempts2 += 1
+
+        if shot == gr_pos:
+            # DEFESA: aqui vou deixar o padrão real (não “ponto para defesa”):
+            # ou seja: defesa = 0, golo = +1
+            outcome = "🔴 DEFESA!"
+        else:
+            if self.turn == 1:
+                self.score1 += 1
+            else:
+                self.score2 += 1
+            outcome = "⚽ GOLO!"
+
+        both = shot if shot == gr_pos else None
+        self.redraw(highlight_shot=shot, highlight_gr=gr_pos, both=both)
+        self.update_labels()
+        messagebox.showinfo("Resultado", f"{outcome}\n\n{shooter} chutou: {shot}\n{keeper} defendeu: {gr_pos}")
+
+        # próximo turno
+        self.turn = 2 if self.turn == 1 else 1
+        self.phase = "shot"
+        self.pending_shot = None
+        self.redraw()
+        self.update_labels()
+
+        if self.check_end_or_early_win():
+            self.finish_game()
+
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
